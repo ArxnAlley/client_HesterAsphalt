@@ -6,7 +6,7 @@ Tool: `tools/optimizeImages.ps1`
 
 Session date: August 2, 2026
 
-Ending version: v2.1
+Ending version: v2.3
 
 ---
 
@@ -123,6 +123,28 @@ Single-purpose bug fix. See section 4.
 * No-upscale rule: a target wider than the source is skipped, not generated
 * Two new summary counters, `Responsive Generated` and `Responsive Skipped`, printed only when the feature is on
 
+## v2.2 - console, safety, hero and AVIF
+
+* Collapsed responsive reporting for images narrower than the smallest configured width — one block per image instead of one line per width. `$responsiveSkipped` still increments by the width count, so summary totals match v2.1 exactly
+* ImageMagick dependency validation ahead of all processing; clear message, exit code 1
+* `$global:LASTEXITCODE = 0` before every encoder call — see section 4
+* New shared helper `getSourceImageWidth`, returning 0 when width cannot be read
+* `$checkMark` hoisted out of the responsive block for reuse
+* Hero generation → `images/graphics/hero/<basename>-hero.webp` at `$heroWidth`
+* AVIF generation → `images/graphics/avif/<basename>.avif` at native size
+* Four new summary counters: `Hero Generated` / `Hero Skipped`, `AVIF Generated` / `AVIF Skipped`
+
+## v2.3 - master width cap
+
+* New `$masterMaxWidth` (default `1920`), applied to the master WebP in `images/graphics/webp/`
+* Source wider than the cap → `-resize "1920x"`, aspect preserved. Source at or under the cap → encoded at native size. Never upscales
+* New helper `writeMasterWidthReport`, silent when the width is unreadable so nothing false is reported as a measurement
+* Two encoder branches rather than one, so the `-resize` argument is only present when it is actually needed
+* Masters predating the cap are detected during the skip path and reported with the exact remedy, then counted under `Oversized Masters`
+* New summary lines `Masters Resized` (`Would Resize` in dry run) and `Master Max Width`
+* Per-image stat labels widened to `Original Size` / `WebP Size` / `Saved`, aligning with both the new width lines and the run summary
+* Responsive, hero and AVIF untouched. Responsive still resizes from `originals/`, so an oversized source still produces a true 1920px responsive variant
+
 ---
 
 # 4. Major Bugs Encountered
@@ -145,6 +167,35 @@ Side effect, intended: `Space Saved` now describes the whole output folder rathe
 None encountered. No malformed-brace or continuation-backtick failure occurred at any point. Every version was run through `[System.Management.Automation.Language.Parser]::ParseFile` before being handed over, and all returned clean. The final v2.1 file also verifies as 0 non-ASCII bytes.
 
 The one encoding hazard that *was* live: the responsive status marker. A literal `✓` in a `.ps1` read by Windows PowerShell 5.1 without a BOM decodes as mojibake. Avoided by constructing it at runtime — `$checkMark = [char]0x2713` — which keeps the source file pure ASCII regardless of how it is saved.
+
+## The `$LASTEXITCODE` shadow (v2.2)
+
+The v2.2 requirement "reset `$LASTEXITCODE` before every ImageMagick invocation" has a trap in it. The obvious implementation is wrong and fails **silently**:
+
+```powershell
+$LASTEXITCODE = 0
+cmd /c "exit 5"
+$LASTEXITCODE            # reads 0
+```
+
+`$LASTEXITCODE` is a global automatic variable. A bare assignment at script scope creates a script-scoped copy that shadows it. Native commands continue to update the global one, but every subsequent read in that scope resolves to the stale shadow — so every `if ($LASTEXITCODE -eq 0 ...)` success check in the file would have started reporting the reset value instead of the encoder's real result.
+
+Worse, the shadow is sticky. A single bare assignment poisons the rest of the script, including later `$global:` writes:
+
+```powershell
+$LASTEXITCODE = 0            # creates the shadow
+$global:LASTEXITCODE = 0     # writes the global
+cmd /c "exit 7"
+$LASTEXITCODE                # still reads the shadow -> 0
+```
+
+Correct form, used at all five encoder call sites:
+
+```powershell
+$global:LASTEXITCODE = 0
+```
+
+Confirmed by test before the change was written, and asserted after: the file contains 5 `$global:LASTEXITCODE = 0` resets and 0 bare assignments. Verified end to end by feeding a deliberately corrupt JPG through all four pipelines — it reported `failed` in each, and the next valid image immediately after still reported success, proving no stale code leaks forward in either direction.
 
 ## Skip logic fixes
 
@@ -190,9 +241,29 @@ Fixture: real ImageMagick output — a 2400x1600 JPG and a 900x600 PNG, chosen s
 | Rerun, no overwrite | All 8 targets `skipped (already exists)`; timestamp snapshot unchanged |
 | Overwrite + responsive | All 6 eligible variants regenerated; timestamps advanced |
 
-## Production run
+## v2.3
 
-v2.1 has since been run against the live Hester Asphalt asset set with `$generateResponsive = $true`. Result on disk: 7 WebP files in `webp/`, 4 variants each in `responsive/480`, `responsive/768`, and `responsive/1200`, and no `1920/` folder. That is the expected outcome for this asset set.
+Fixture: four real sources chosen to cover every branch of the cap — 384px (below every responsive width), 1200px, 1536px, and a synthesized **5472x3648** camera-sized JPG.
+
+| Test | Result |
+| --- | --- |
+| Normal conversion | 5472px → master **1920x1280**; 384 / 1200 / 1536 all kept at native size. `Masters Resized : 1` |
+| Skipped conversion | All four skipped; `Masters Resized : 0`; byte totals unchanged |
+| Dry run, convert path | Width lines and `Would Resize : 1` printed; `webp/` file count afterward **0** |
+| Dry run, skip path | `Would Skip : 4`; no writes |
+| Overwrite | All four re-encoded; 5472px capped again at 1920px; other three unchanged |
+| Responsive generation | 480 / 768 / 1200 / 1920 all produced at exact widths from the 5472px source |
+| Legacy oversized master | Planted a 5472px master newer than its source → reported `Existing master is 5472 px - over the 1920 px cap.` and `Oversized Masters: 1`, not silently kept |
+
+Assertions verified programmatically against every file in `webp/`: **no master wider than 1920px**, and **no master wider than its own source**.
+
+## Production runs
+
+v2.1 was run against the live asset set with `$generateResponsive = $true`.
+
+Current disk state (8 sources): 8 masters in `webp/`, 5 variants each in `responsive/480`, `768` and `1200`, and 1 variant in `responsive/1920`.
+
+**v2.3 has not been run against production.** One master is over the cap — `webp/asphaltRepair6.webp` at 6000x4000 / 2,842,152 bytes, generated under v2.2 from a 6000x4000 source. Because that master is newer than its source, a routine run reports it and leaves it alone. Rebuilding it needs one overwrite run and is expected to land near 400KB.
 
 ---
 
@@ -213,7 +284,12 @@ Until one of those is true, a bad edit to `optimizeImages.ps1` is unrecoverable.
 
 # 7. Open Items Carried Forward
 
-* Three of the seven production images are 384px wide and generate twelve `skipped (original smaller)` lines per run — noisy, addressed in v2.2
-* No dependency check for ImageMagick; a missing `magick` currently surfaces as a per-image `Failed:` line
-* `$LASTEXITCODE` is inspected without being reset before the encoder call. With ImageMagick absent and a stale zero exit code left by an earlier native command, a pre-existing WebP could in theory be reported as freshly converted. Not reproduced in testing; carried as a known edge case
-* Hero and AVIF remain framework-only
+Closed since this section was first written: responsive output noise (v2.2), ImageMagick dependency validation (v2.2), the `$LASTEXITCODE` reset (v2.2), hero and AVIF promotion from framework-only (v2.2), and the uncapped master (v2.3).
+
+Still open:
+
+* **`webp/asphaltRepair6.webp` is 6000x4000 / 2.78MB** and is referenced live on three pages, where it renders at roughly 600px. Needs one `$overwriteExisting = $true` run to come down to 1920px
+* **AVIF quality is tied to `$quality`.** At 80, AVIF output is consistently larger than the WebP equivalent. Needs a separate `$avifQuality` around 50
+* **No source control.** `c:\Dev\NuloWorkspace` is still not a git repository. Every version described here is a working-tree edit only
+* Folder creation remains create-on-demand for `responsive/`, `hero/` and `avif/`, but always-on for `webp/` — inconsistent
+* Interactive CLI still planned

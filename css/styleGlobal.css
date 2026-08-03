@@ -547,7 +547,7 @@ h1, h2, h3, .display {
   padding-block: clamp(80px, 11vw, 140px);
   background:
     linear-gradient(180deg, rgba(13, 14, 16, 0.78), rgba(13, 14, 16, 0.88)),
-    url("../images/graphics/bandCrew.jpg") center / cover no-repeat;
+    url("../images/graphics/webp/crackFilling.webp") center / cover no-repeat;
 }
 .cta-band .h-sec { margin-bottom: 14px; }
 .cta-band p { color: var(--mute); max-width: 56ch; margin: 0 auto 34px; }
@@ -635,12 +635,15 @@ h1, h2, h3, .display {
   height: 100%;
   object-fit: cover;
 }
+/* The reveal is a clip, never a resize. .ba-top stays exactly the size of the
+   slider so the before image resolves its 100%/cover box against the same
+   container as .ba-img and the two stay pixel-identical while dragging.
+   Sizing this element instead would re-crop the image on every pointer move. */
 .ba-top {
   position: absolute;
-  inset: 0 auto 0 0;
-  overflow: hidden;
+  inset: 0;
+  clip-path: inset(0 50% 0 0);
 }
-.ba-top img { width: auto; min-width: 100%; height: 100%; }
 .ba-handle {
   position: absolute;
   top: 0;

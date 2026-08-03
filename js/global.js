@@ -199,17 +199,15 @@ function hesterBaSlider() {
     var top = root.querySelector(".ba-top");
     var handle = root.querySelector(".ba-handle");
     if (!top || !handle) return;
-    var topImg = top.querySelector("img");
 
     function setSplit(pct) {
       pct = Math.max(2, Math.min(98, pct));
-      top.style.width = pct + "%";
+      top.style.clipPath = "inset(0 " + (100 - pct) + "% 0 0)";
       handle.style.left = pct + "%";
       handle.setAttribute("aria-valuenow", Math.round(pct));
     }
-    function sizeTopImage() { topImg.style.width = root.getBoundingClientRect().width + "px"; }
-    sizeTopImage();
-    window.addEventListener("resize", sizeTopImage);
+
+    setSplit(parseFloat(handle.getAttribute("aria-valuenow")) || 50);
 
     function pctFromEvent(e) {
       var rect = root.getBoundingClientRect();

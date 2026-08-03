@@ -1,6 +1,6 @@
 # ============================================
 # Nulo Studio - Image Optimizer
-# Version 2.2
+# Version 2.3
 # ============================================
 
 # ---------- Configuration ----------
@@ -23,6 +23,11 @@ $responsiveWidths = @(
     1200,
     1920
 )
+
+# Hard ceiling for the master WebP - wider sources are scaled down to this.
+# Narrower sources keep their native size; nothing is ever upscaled.
+
+$masterMaxWidth = 1920
 
 $heroWidth = 1920
 
@@ -70,15 +75,51 @@ function getSourceImageWidth {
 
 }
 
+# Prints the master width decision for one image.
+# Stays silent when the width could not be read, so nothing misleading
+# is reported as a measurement.
+
+function writeMasterWidthReport {
+
+    param (
+        [int] $sourceWidth,
+        [bool] $resizeMaster
+    )
+
+    if ($sourceWidth -le 0) {
+
+        return
+
+    }
+
+    Write-Host ("  Original Width : {0} px" -f $sourceWidth)
+
+    if ($resizeMaster) {
+
+        Write-Host ("  Resized Master : {0} px" -f $masterMaxWidth) -ForegroundColor Cyan
+
+    }
+    else {
+
+        Write-Host "  Master Image kept at original size."
+
+    }
+
+}
+
 # ---------- Header ----------
 
 Write-Host ""
 Write-Host "===========================================" -ForegroundColor Cyan
-Write-Host " NULO STUDIO IMAGE OPTIMIZER v2.2" -ForegroundColor Cyan
+Write-Host " NULO STUDIO IMAGE OPTIMIZER v2.3" -ForegroundColor Cyan
 Write-Host "===========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # ---------- Mode ----------
+
+Write-Host "Preparing master WebP generation..." -ForegroundColor Cyan
+Write-Host ("  Maximum width : {0}" -f $masterMaxWidth)
+Write-Host ""
 
 if ($dryRun) {
 
@@ -202,6 +243,10 @@ $count = 0
 
 $skipped = 0
 
+$masterResized = 0
+
+$oversizedMasters = 0
+
 $originalBytes = 0
 
 $newBytes = 0
@@ -239,6 +284,20 @@ foreach ($image in $images) {
 
             }
 
+            # Masters built before the width cap existed are reported, never
+            # silently kept. Rebuilding them is an overwrite decision.
+
+            $existingWidth = getSourceImageWidth $destination
+
+            if ($existingWidth -gt $masterMaxWidth) {
+
+                Write-Host ("  Existing master is {0} px - over the {1} px cap." -f $existingWidth, $masterMaxWidth) -ForegroundColor Yellow
+                Write-Host "  Set `$overwriteExisting = `$true to rebuild it." -ForegroundColor Yellow
+
+                $oversizedMasters++
+
+            }
+
             Write-Host ""
 
             $originalBytes += $image.Length
@@ -254,18 +313,34 @@ foreach ($image in $images) {
 
     $beforeSize = $image.Length
 
+    # Native width decides whether the master has to come down to the cap.
+    # A width of 0 means identify failed - leave the image at its native size.
+
+    $sourceWidth = getSourceImageWidth $image.FullName
+
+    $resizeMaster = ($sourceWidth -gt $masterMaxWidth)
+
     # Report only - no files are written in dry run
 
     if ($dryRun) {
 
         Write-Host "Would Convert:" -ForegroundColor Cyan
         Write-Host $image.Name
+
+        writeMasterWidthReport $sourceWidth $resizeMaster
+
         Write-Host ""
 
         if (Test-Path $destination) {
 
             $originalBytes += $beforeSize
             $newBytes += (Get-Item $destination).Length
+
+        }
+
+        if ($resizeMaster) {
+
+            $masterResized++
 
         }
 
@@ -277,17 +352,39 @@ foreach ($image in $images) {
 
     Write-Host "Converting: $($image.Name)" -ForegroundColor Cyan
 
+    writeMasterWidthReport $sourceWidth $resizeMaster
+
     # Cleared first so a previous failure cannot be read as success
 
     $global:LASTEXITCODE = 0
 
-    magick `
-        "$($image.FullName)" `
-        -strip `
-        -quality $quality `
-        "$destination"
+    if ($resizeMaster) {
+
+        magick `
+            "$($image.FullName)" `
+            -strip `
+            -resize "$($masterMaxWidth)x" `
+            -quality $quality `
+            "$destination"
+
+    }
+    else {
+
+        magick `
+            "$($image.FullName)" `
+            -strip `
+            -quality $quality `
+            "$destination"
+
+    }
 
     if ($LASTEXITCODE -eq 0 -and (Test-Path $destination)) {
+
+        if ($resizeMaster) {
+
+            $masterResized++
+
+        }
 
         $afterSize = (Get-Item $destination).Length
 
@@ -304,9 +401,9 @@ foreach ($image in $images) {
 
         }
 
-        Write-Host ("  Original : {0:N2} KB" -f ($beforeSize / 1KB))
-        Write-Host ("  WebP     : {0:N2} KB" -f ($afterSize / 1KB))
-        Write-Host ("  Saved    : {0:N1}%" -f $percent)
+        Write-Host ("  Original Size  : {0:N2} KB" -f ($beforeSize / 1KB))
+        Write-Host ("  WebP Size      : {0:N2} KB" -f ($afterSize / 1KB))
+        Write-Host ("  Saved          : {0:N1}%" -f $percent)
         Write-Host ""
 
         $originalBytes += $beforeSize
@@ -672,12 +769,20 @@ if ($dryRun) {
 
     Write-Host ("Would Convert    : {0}" -f $count)
     Write-Host ("Would Skip       : {0}" -f $skipped)
+    Write-Host ("Would Resize     : {0}" -f $masterResized)
 
 }
 else {
 
     Write-Host ("Images Converted : {0}" -f $count)
     Write-Host ("Images Skipped   : {0}" -f $skipped)
+    Write-Host ("Masters Resized  : {0}" -f $masterResized)
+
+}
+
+if ($oversizedMasters -gt 0) {
+
+    Write-Host ("Oversized Masters: {0}" -f $oversizedMasters) -ForegroundColor Yellow
 
 }
 
@@ -706,6 +811,7 @@ Write-Host ("Original Size    : {0:N2} MB" -f ($originalBytes / 1MB))
 Write-Host ("WebP Size        : {0:N2} MB" -f ($newBytes / 1MB))
 Write-Host ("Space Saved      : {0:N2} MB ({1:N1}%)" -f ($totalSaved / 1MB), $totalPercent)
 Write-Host ("Quality          : {0}" -f $quality)
+Write-Host ("Master Max Width : {0} px" -f $masterMaxWidth)
 Write-Host ("Time             : {0:N2} sec" -f $stopwatch.Elapsed.TotalSeconds)
 
 if ($dryRun) {

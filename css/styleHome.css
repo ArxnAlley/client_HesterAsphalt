@@ -3,6 +3,12 @@
    ============================================================ */
 
 /* ---------- hero ---------- */
+
+/* The hero owns its base appearance here rather than borrowing it from a
+   video poster. The <video> carries no poster on purpose: a poster is painted
+   whenever readyState is 0, which includes the first frame of every refresh,
+   so any image set there is guaranteed to flash before the video decodes.
+   Shade and grain sit over this base, and the video layers in when ready. */
 .hero {
   position: relative;
   min-height: 100svh;
@@ -10,6 +16,7 @@
   align-items: center;
   overflow: hidden;
   isolation: isolate;
+  background: var(--ink);
 }
 .hero-video {
   position: absolute;
